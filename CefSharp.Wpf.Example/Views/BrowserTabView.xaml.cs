@@ -16,6 +16,7 @@ using CefSharp.Example.PostMessage;
 using CefSharp.Fluent;
 using CefSharp.Wpf.Example.Handlers;
 using CefSharp.Wpf.Example.ViewModels;
+using CefSharp.Wpf.Experimental;
 using CefSharp.Wpf.Experimental.Accessibility;
 
 namespace CefSharp.Wpf.Example.Views
@@ -30,6 +31,8 @@ namespace CefSharp.Wpf.Example.Views
             InitializeComponent();
 
             DataContextChanged += OnDataContextChanged;
+
+            browser.UsePopupMouseTransform();
 
             //browser.BrowserSettings.BackgroundColor = Cef.ColorSetARGB(0, 255, 255, 255);
 
@@ -204,7 +207,10 @@ namespace CefSharp.Wpf.Example.Views
                 {
                     UpdateDownloadAction("OnBeforeDownload", downloadItem);
 
+                    //Show Dialog prompting user to save
                     callback.Continue("", showDialog: true);
+
+                    return true;
 
                 }).OnDownloadUpdated((chromiumWebBrowser, browser, downloadItem, callback) =>
                 {

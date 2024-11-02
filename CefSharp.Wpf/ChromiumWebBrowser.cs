@@ -3,6 +3,7 @@
 // Use of this source code is governed by a BSD-style license that can be found in the LICENSE file.
 
 using System;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -133,7 +134,7 @@ namespace CefSharp.Wpf
         /// <summary>
         /// Keep the current drag&amp;drop effects to return the appropriate effects on drag over.
         /// </summary>
-        private DragDropEffects currentDragDropEffects;
+        private DragDropEffects? currentDragDropEffects;
         /// <summary>
         /// A flag that indicates whether or not the designer is active
         /// NOTE: Needs to be static for OnApplicationExit
@@ -149,6 +150,11 @@ namespace CefSharp.Wpf
         /// has been initialized.
         /// </summary>
         private bool initialFocus;
+
+        /// <summary>
+        /// The class that coordinates the positioning of the dropdown if wanted.
+        /// </summary>
+        internal IMousePositionTransform MousePositionTransform { get; set; }
 
         /// <summary>
         /// When enabled the browser will resize by 1px when it becomes visible to workaround
@@ -546,16 +552,7 @@ namespace CefSharp.Wpf
         [MethodImpl(MethodImplOptions.NoInlining)]
         private void NoInliningConstructor()
         {
-            //Initialize CEF if it hasn't already been initialized
-            if (!Cef.IsInitialized)
-            {
-                var settings = new CefSettings();
-
-                if (!Cef.Initialize(settings))
-                {
-                    throw new InvalidOperationException(CefInitializeFailedErrorMessage);
-                }
-            }
+            InitializeCefInternal();
 
             //Add this ChromiumWebBrowser instance to a list of IDisposable objects
             // that if still alive at the time Cef.Shutdown is called will be disposed of
@@ -613,6 +610,7 @@ namespace CefSharp.Wpf
             PresentationSource.AddSourceChangedHandler(this, PresentationSourceChangedHandler);
 
             MenuHandler = new ContextMenuHandler();
+            MousePositionTransform = new NoOpMousePositionTransform();
 
             UseLayoutRounding = true;
         }
@@ -673,7 +671,10 @@ namespace CefSharp.Wpf
                 //Stop rendering immediately so later on when we dispose of the
                 //RenderHandler no further OnPaint calls take place
                 //Check browser not null as it's possible to call Dispose before it's created
-                browser?.GetHost().WasHidden(true);
+                if (browser?.IsDisposed == false)
+                {
+                    browser?.GetHost().WasHidden(true);
+                }
 
                 UiThreadRunAsync(() =>
                 {
@@ -913,20 +914,38 @@ namespace CefSharp.Wpf
             {
                 if (browser != null)
                 {
-                    //DoDragDrop will fire DragEnter event
+                    // DoDragDrop will fire DragEnter event
                     var result = DragDrop.DoDragDrop(this, dataObject, allowedOps.GetDragEffects());
+                    var dragOperationMask = GetDragOperationsMask(result, currentDragDropEffects);
 
-                    //DragData was stored so when DoDragDrop fires DragEnter we reuse a clone of the IDragData provided here
+                    // DragData was stored so when DoDragDrop fires DragEnter we reuse a clone of the IDragData provided here
                     currentDragData = null;
+                    currentDragDropEffects = null;
 
-                    //If result == DragDropEffects.None then we'll send DragOperationsMask.None
-                    //effectively cancelling the drag operation
-                    browser.GetHost().DragSourceEndedAt(x, y, result.GetDragOperationsMask());
+                    // If result or the last recorded drag drop effect were DragDropEffects.None
+                    // then we'll send DragOperationsMask.None, effectively cancelling the drag operation
+                    browser.GetHost().DragSourceEndedAt(x, y, dragOperationMask);
                     browser.GetHost().DragSourceSystemDragEnded();
                 }
             });
 
             return true;
+        }
+
+        protected virtual DragOperationsMask GetDragOperationsMask(DragDropEffects result, DragDropEffects? dragEffects)
+        {
+            // Ensure the drag and drop operation wasn't cancelled
+            var finalEffectMask = (dragEffects ?? DragDropEffects.None).GetDragOperationsMask() & result.GetDragOperationsMask();
+
+            // We shouldn't have an instance where finalEffectMask signfies multiple effects, as the operation
+            // set by UpdateDragCursor should only ever be none, move, copy, or link. However, if it does, we'll
+            // just default to copy, as that reflects the defaulting behavior of GetDragEffects.
+            if (finalEffectMask.HasFlag(DragOperationsMask.Every))
+            {
+                return DragOperationsMask.Copy;
+            }
+
+            return finalEffectMask;
         }
 
         /// <inheritdoc />
@@ -945,21 +964,30 @@ namespace CefSharp.Wpf
         }
 
         /// <inheritdoc />
-        void IRenderWebBrowser.OnAcceleratedPaint(PaintElementType type, Rect dirtyRect, IntPtr sharedHandle)
+        void IRenderWebBrowser.OnAcceleratedPaint(PaintElementType type, Rect dirtyRect, AcceleratedPaintInfo acceleratedPaintInfo)
         {
-            OnAcceleratedPaint(type == PaintElementType.Popup, dirtyRect, sharedHandle);
+            OnAcceleratedPaint(type == PaintElementType.Popup, dirtyRect, acceleratedPaintInfo);
         }
 
         /// <summary>
         /// Called when an element has been rendered to the shared texture handle.
         /// This method is only called when <see cref="IWindowInfo.SharedTextureEnabled"/> is set to true
+        ///
+        /// The underlying implementation uses a pool to deliver frames. As a result,
+        /// the handle may differ every frame depending on how many frames are
+        /// in-progress. The handle's resource cannot be cached and cannot be accessed
+        /// outside of this callback. It should be reopened each time this callback is
+        /// executed and the contents should be copied to a texture owned by the
+        /// client application. The contents of <paramref name="acceleratedPaintInfo"/>acceleratedPaintInfo
+        /// will be released back to the pool after this callback returns.
         /// </summary>
         /// <param name="isPopup">indicates whether the element is the view or the popup widget.</param>
         /// <param name="dirtyRect">contains the set of rectangles in pixel coordinates that need to be repainted</param>
-        /// <param name="sharedHandle">is the handle for a D3D11 Texture2D that can be accessed via ID3D11Device using the OpenSharedResource method.</param>
-        protected virtual void OnAcceleratedPaint(bool isPopup, Rect dirtyRect, IntPtr sharedHandle)
+        /// <param name="acceleratedPaintInfo">contains the shared handle; on Windows it is a
+        /// HANDLE to a texture that can be opened with D3D11 OpenSharedResource.</param>
+        protected virtual void OnAcceleratedPaint(bool isPopup, Rect dirtyRect, AcceleratedPaintInfo acceleratedPaintInfo)
         {
-            RenderHandler?.OnAcceleratedPaint(isPopup, dirtyRect, sharedHandle);
+            RenderHandler?.OnAcceleratedPaint(isPopup, dirtyRect, acceleratedPaintInfo);
         }
 
         /// <inheritdoc />
@@ -1037,7 +1065,11 @@ namespace CefSharp.Wpf
         /// <param name="isOpen">if set to <c>true</c> [is open].</param>
         protected virtual void OnPopupShow(bool isOpen)
         {
-            UiThreadRunAsync(() => { popupImage.Visibility = isOpen ? Visibility.Visible : Visibility.Hidden; });
+            UiThreadRunAsync(() =>
+            {
+                popupImage.Visibility = isOpen ? Visibility.Visible : Visibility.Hidden;
+                MousePositionTransform.OnPopupShow(isOpen);
+            });
         }
 
         /// <inheritdoc />
@@ -1664,7 +1696,6 @@ namespace CefSharp.Wpf
             {
                 var mouseEvent = GetMouseEvent(e);
                 var effect = e.AllowedEffects.GetDragOperationsMask();
-
                 browser.GetHost().DragTargetDragOver(mouseEvent, effect);
                 browser.GetHost().DragTargetDragDrop(mouseEvent);
             }
@@ -1694,7 +1725,7 @@ namespace CefSharp.Wpf
             {
                 browser.GetHost().DragTargetDragOver(GetMouseEvent(e), e.AllowedEffects.GetDragOperationsMask());
             }
-            e.Effects = currentDragDropEffects;
+            e.Effects = currentDragDropEffects ?? DragDropEffects.None;
             e.Handled = true;
         }
 
@@ -1712,6 +1743,7 @@ namespace CefSharp.Wpf
 
                 //DoDragDrop will fire this handler for internally sourced Drag/Drop operations
                 //we use the existing IDragData (cloned copy)
+
                 var dragData = currentDragData ?? e.GetDragData();
 
                 browser.GetHost().DragTargetDragEnter(dragData, mouseEvent, effect);
@@ -1747,10 +1779,10 @@ namespace CefSharp.Wpf
                     {
                         CleanupElement = window;
                     }
-                    else if(CleanupElement is Window parent)
+                    else if (CleanupElement is Window parent)
                     {
-                        //If the CleanupElement is a window then move it to the new Window
-                        if(parent != window)
+                        // If the CleanupElement is a window then move it to the new Window
+                        if (parent != window)
                         {
                             CleanupElement = window;
                         }
@@ -2108,8 +2140,10 @@ namespace CefSharp.Wpf
             popupImage.Width = rect.Width;
             popupImage.Height = rect.Height;
 
-            Canvas.SetLeft(popupImage, rect.X);
-            Canvas.SetTop(popupImage, rect.Y);
+            var point = MousePositionTransform.UpdatePopupSizeAndPosition(rect, viewRect);
+
+            Canvas.SetLeft(popupImage, point.X);
+            Canvas.SetTop(popupImage, point.Y);
         }
 
         /// <summary>
@@ -2276,6 +2310,7 @@ namespace CefSharp.Wpf
                 var point = e.GetPosition(this);
                 var modifiers = e.GetModifiers();
 
+                MousePositionTransform.TransformMousePoint(ref point);
                 browser.GetHost().SendMouseMoveEvent((int)point.X, (int)point.Y, false, modifiers);
             }
 
@@ -2293,12 +2328,11 @@ namespace CefSharp.Wpf
                 var point = e.GetPosition(this);
                 var modifiers = e.GetModifiers();
                 var isShiftKeyDown = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
-                var pointX = (int)point.X;
-                var pointY = (int)point.Y;
+                MousePositionTransform.TransformMousePoint(ref point);
 
                 browser.SendMouseWheelEvent(
-                    pointX,
-                    pointY,
+                    (int)point.X,
+                    (int)point.Y,
                     deltaX: isShiftKeyDown ? e.Delta : 0,
                     deltaY: !isShiftKeyDown ? e.Delta : 0,
                     modifiers: modifiers);
@@ -2444,11 +2478,12 @@ namespace CefSharp.Wpf
                     //Anything greater than 3 then we send click count of 1
                     var clickCount = e.ClickCount;
 
-                    if(clickCount > 3)
+                    if (clickCount > 3)
                     {
                         clickCount = 1;
                     }
 
+                    MousePositionTransform.TransformMousePoint(ref point);
                     browser.GetHost().SendMouseClickEvent((int)point.X, (int)point.Y, (MouseButtonType)e.ChangedButton, mouseUp, clickCount, modifiers);
                 }
 
@@ -2558,7 +2593,7 @@ namespace CefSharp.Wpf
         /// <inheritdoc/>
         public void Load(string url)
         {
-            if(IsDisposed)
+            if (IsDisposed)
             {
                 return;
             }
@@ -2722,6 +2757,10 @@ namespace CefSharp.Wpf
                     // the same time, the timer maybe Disposed on a different thread.
                     // https://github.com/cefsharp/CefSharp/issues/4597
                 }
+                catch (Exception ex)
+                {
+                    renderIdleTcs.TrySetException(ex);
+                }
             };
 
             idleTimer.Start();
@@ -2776,7 +2815,7 @@ namespace CefSharp.Wpf
 
             return browser;
         }
-        
+
         private async Task CefUiThreadRunAsync(Action action)
         {
             if (!IsDisposed && InternalIsBrowserInitialized())

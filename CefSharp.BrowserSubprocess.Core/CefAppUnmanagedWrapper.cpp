@@ -63,6 +63,11 @@ namespace CefSharp
             //Multiple CefBrowserWrappers created when opening popups
             _browserWrappers->TryAdd(browser->GetIdentifier(), wrapper);
 
+            if (!extraInfo.get())
+            {
+                return;
+            }
+
             //For the main browser only we check LegacyBindingEnabled and
             //load the objects. Popups don't send this information and checking
             //will override the _legacyBindingEnabled field
@@ -220,7 +225,7 @@ namespace CefSharp
             auto rootObjectWrappers = browserWrapper->JavascriptRootObjectWrappers;
 
             JavascriptRootObjectWrapper^ wrapper;
-            if (rootObjectWrappers->TryRemove(frame->GetIdentifier(), wrapper))
+            if (rootObjectWrappers->TryRemove(StringUtils::ToClr(frame->GetIdentifier()), wrapper))
             {
                 delete wrapper;
             }
@@ -292,7 +297,7 @@ namespace CefSharp
             frame->SendProcessMessage(CefProcessId::PID_BROWSER, uncaughtExceptionMessage);
         }
 
-        JavascriptRootObjectWrapper^ CefAppUnmanagedWrapper::GetJsRootObjectWrapper(int browserId, int64_t frameId)
+        JavascriptRootObjectWrapper^ CefAppUnmanagedWrapper::GetJsRootObjectWrapper(int browserId, CefString& frameId)
         {
             auto browserWrapper = FindBrowserWrapper(browserId);
 
@@ -302,16 +307,17 @@ namespace CefSharp
             }
 
             auto rootObjectWrappers = browserWrapper->JavascriptRootObjectWrappers;
+            auto frameIdClr = StringUtils::ToClr(frameId);
 
             JavascriptRootObjectWrapper^ rootObject;
-            if (!rootObjectWrappers->TryGetValue(frameId, rootObject))
+            if (!rootObjectWrappers->TryGetValue(frameIdClr, rootObject))
             {
 #ifdef NETCOREAPP
                 rootObject = gcnew JavascriptRootObjectWrapper(browserId);
 #else
                 rootObject = gcnew JavascriptRootObjectWrapper(browserId, browserWrapper->BrowserProcess);
 #endif
-                rootObjectWrappers->TryAdd(frameId, rootObject);
+                rootObjectWrappers->TryAdd(frameIdClr, rootObject);
             }
 
             return rootObject;
@@ -400,7 +406,7 @@ namespace CefSharp
                 }
 
                 //both messages have callbackId stored at index 0
-                auto frameId = frame->GetIdentifier();
+                auto frameId = StringUtils::ToClr(frame->GetIdentifier());
                 int64_t callbackId = GetInt64(argList, 0);
 
                 if (name == kEvaluateJavascriptRequest)
@@ -604,7 +610,7 @@ namespace CefSharp
                 {
                     auto jsCallbackId = GetInt64(argList, 0);
                     JavascriptRootObjectWrapper^ rootObjectWrapper;
-                    browserWrapper->JavascriptRootObjectWrappers->TryGetValue(frame->GetIdentifier(), rootObjectWrapper);
+                    browserWrapper->JavascriptRootObjectWrappers->TryGetValue(StringUtils::ToClr(frame->GetIdentifier()), rootObjectWrapper);
                     if (rootObjectWrapper != nullptr && rootObjectWrapper->CallbackRegistry != nullptr)
                     {
                         rootObjectWrapper->CallbackRegistry->Deregister(jsCallbackId);
@@ -712,7 +718,7 @@ namespace CefSharp
             {
                 if (frame.get() && frame->IsValid())
                 {
-                    auto frameId = frame->GetIdentifier();
+                    auto frameId = StringUtils::ToClr(frame->GetIdentifier());
                     auto callbackId = GetInt64(argList, 0);
 
                     JavascriptRootObjectWrapper^ rootObjectWrapper;

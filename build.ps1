@@ -5,9 +5,9 @@ param(
     [Parameter(Position = 0)] 
     [string] $Target = "vs2019",
     [Parameter(Position = 1)]
-    [string] $Version = "120.1.80",
+    [string] $Version = "130.1.90",
     [Parameter(Position = 2)]
-    [string] $AssemblyVersion = "120.1.80",
+    [string] $AssemblyVersion = "130.1.90",
     [Parameter(Position = 3)]
     [ValidateSet("NetFramework", "NetCore", "NetFramework452", "NetCore31")]
     [string] $TargetFramework = "NetFramework",
@@ -184,7 +184,7 @@ function VSX
     $versionSearchStr = "[$VS_VER.0," + ($VS_VER+1) + ".0)"
 
     $ErrorActionPreference="SilentlyContinue"
-    $VSInstallPath = & $VSWherePath -version $versionSearchStr -property installationPath $VS_PRE
+    $VSInstallPath = & $VSWherePath -version $versionSearchStr -latest -property installationPath $VS_PRE
     $ErrorActionPreference="Stop"
     
     Write-Diagnostic "$($VS_OFFICIAL_VER)InstallPath: $VSInstallPath"
@@ -269,7 +269,15 @@ function Nupkg
         return
     }
 
-    Write-Diagnostic "Building nuget package"
+    $gitBranch = git rev-parse --abbrev-ref HEAD
+    $gitCommit = git rev-parse HEAD
+
+    if (Test-Path Env:\APPVEYOR_REPO_BRANCH) # https://github.com/appveyor/ci/issues/1606
+    {
+        $gitBranch = $env:APPVEYOR_REPO_BRANCH
+    }
+
+    Write-Diagnostic "Building nuget package for $gitCommit on $gitBranch"
 
     # Build packages
     foreach($file in $Files)
@@ -311,11 +319,11 @@ function Nupkg
             #Only show package analysis for newer packages
             if($IsNetCoreBuild)
             {
-                . $nuget pack $filePath -Version $Version -OutputDirectory $NugetPackagePath -Properties "RedistVersion=$RedistVersion;"
+                . $nuget pack $filePath -Version $Version -OutputDirectory $NugetPackagePath -Properties "RedistVersion=$RedistVersion;Branch=$gitBranch;CommitSha=$gitCommit;"
             }
             else
             {
-                . $nuget pack $filePath -NoPackageAnalysis -Version $Version -OutputDirectory $NugetPackagePath -Properties "RedistVersion=$RedistVersion;"
+                . $nuget pack $filePath -NoPackageAnalysis -Version $Version -OutputDirectory $NugetPackagePath -Properties "RedistVersion=$RedistVersion;Branch=$gitBranch;CommitSha=$gitCommit;"
             }
         }
         finally

@@ -19,7 +19,8 @@ namespace CefSharp
             {
                 INT64,
                 CEFTIME,
-                JSCALLBACK
+                JSCALLBACK,
+                ARRAYBUFFER
             };
 
             template<typename TList, typename TIndex>
@@ -91,41 +92,62 @@ namespace CefSharp
             {
                 return IsType(PrimitiveType::CEFTIME, list, index);
             }
+
+            template<typename TList, typename TIndex>
+            void SetArrayBuffer(const CefRefPtr<TList>& list, TIndex index, const size_t& size, const void* value)
+            {
+                const auto src = static_cast<const uint8_t*>(value);
+
+                auto dest = new uint8_t[size + 1];
+                dest[0] = static_cast<uint8_t>(PrimitiveType::ARRAYBUFFER);
+                memcpy(&dest[1], src, size);
+
+                list->SetBinary(index, CefBinaryValue::Create(dest, size + 1));
+            }
+
+            template<typename TList, typename TIndex>
+            cli::array<Byte>^ GetArrayBuffer(const CefRefPtr<TList>& list, TIndex index)
+            {
+                auto binaryValue = list->GetBinary(index);
+                auto size = binaryValue->GetSize() - 1;
+
+                auto bufferByte = gcnew cli::array<Byte>(static_cast<int>(size));
+                pin_ptr<Byte> src = &bufferByte[0]; // pin pointer to first element in arr
+
+                binaryValue->GetData(static_cast<void*>(src), size, 1);
+
+                return bufferByte;
+            }
+
+            template<typename TList, typename TIndex>
+            bool IsArrayBuffer(const CefRefPtr<TList>& list, TIndex index)
+            {
+                return IsType(PrimitiveType::ARRAYBUFFER, list, index);
+            }
+
             template<typename TList, typename TIndex>
             void SetJsCallback(const CefRefPtr<TList>& list, TIndex index, JavascriptCallback^ value)
             {
-                auto id = value->Id;
-                auto browserId = value->BrowserId;
-                auto frameId = value->FrameId;
+                auto bytes = value->ToByteArray(static_cast<unsigned char>(PrimitiveType::JSCALLBACK));
+                pin_ptr<Byte> bytesPtr = &bytes[0];                
 
-                unsigned char mem[1 + sizeof(int) + sizeof(int64_t) + sizeof(int64_t)];
-                mem[0] = static_cast<unsigned char>(PrimitiveType::JSCALLBACK);
-                memcpy(reinterpret_cast<void*>(mem + 1), &browserId, sizeof(int));
-                memcpy(reinterpret_cast<void*>(mem + 1 + sizeof(int)), &id, sizeof(int64_t));
-                memcpy(reinterpret_cast<void*>(mem + 1 + sizeof(int) + sizeof(int64_t)), &frameId, sizeof(int64_t));
-
-                auto binaryValue = CefBinaryValue::Create(mem, sizeof(mem));
+                auto binaryValue = CefBinaryValue::Create(bytesPtr, bytes->Length);
                 list->SetBinary(index, binaryValue);
             }
 
             template<typename TList, typename TIndex>
             JavascriptCallback^ GetJsCallback(const CefRefPtr<TList>& list, TIndex index)
             {
-                auto result = gcnew JavascriptCallback();
-                int64_t id;
-                int browserId;
-                int64_t frameId;
-
                 auto binaryValue = list->GetBinary(index);
-                binaryValue->GetData(&browserId, sizeof(int), 1);
-                binaryValue->GetData(&id, sizeof(int64_t), 1 + sizeof(int));
-                binaryValue->GetData(&frameId, sizeof(int64_t), 1 + sizeof(int) + sizeof(int64_t));
+                auto bufferSize = (int)binaryValue->GetSize();
+                auto buffer = gcnew cli::array<Byte>(bufferSize);
+                pin_ptr<Byte> bufferPtr = &buffer[0]; // pin pointer to first element in arr
 
-                result->Id = id;
-                result->BrowserId = browserId;
-                result->FrameId = frameId;
+                //TODO: We can potentially further optimise this by geting binaryValue->GetRawData
+                // and then reading directly from that                
+                binaryValue->GetData(static_cast<void*>(bufferPtr), bufferSize, 0);
 
-                return result;
+                return JavascriptCallback::FromBytes(buffer);
             }
 
             template<typename TList, typename TIndex>

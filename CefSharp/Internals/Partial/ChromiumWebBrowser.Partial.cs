@@ -4,6 +4,7 @@
 
 using System;
 using System.ComponentModel;
+using System.Numerics;
 using System.Threading;
 using System.Threading.Tasks;
 using CefSharp.Internals;
@@ -26,11 +27,12 @@ namespace CefSharp.WinForms
             "the IsBrowserInitialized property to determine when the browser has been initialized.";
 
         private const string CefInitializeFailedErrorMessage = "Cef.Initialize() failed.Check the log file see https://github.com/cefsharp/CefSharp/wiki/Trouble-Shooting#log-file for details.";
+        private const string CefIsInitializedFalseErrorMessage = "Cef.IsInitialized was false!.Check the log file for errors!. See https://github.com/cefsharp/CefSharp/wiki/Trouble-Shooting#log-file for details.";
 
         /// <summary>
         /// Used as workaround for issue https://github.com/cefsharp/CefSharp/issues/3021
         /// </summary>
-        private long canExecuteJavascriptInMainFrameId;
+        private int canExecuteJavascriptInMainFrameChildProcessId;
 
         /// <summary>
         /// The browser initialized - boolean represented as 0 (false) and 1(true) as we use Interlocker to increment/reset
@@ -247,7 +249,7 @@ namespace CefSharp.WinForms
             get { return InternalIsBrowserInitialized(); }
         }
 
-        void IWebBrowserInternal.SetCanExecuteJavascriptOnMainFrame(long frameId, bool canExecute)
+        void IWebBrowserInternal.SetCanExecuteJavascriptOnMainFrame(string frameId, bool canExecute)
         {
             //When loading pages of a different origin the frameId changes
             //For the first loading of a new origin the messages from the render process
@@ -256,12 +258,14 @@ namespace CefSharp.WinForms
             //incorrectly overrides the value
             //https://github.com/cefsharp/CefSharp/issues/3021
 
-            if (frameId > canExecuteJavascriptInMainFrameId && !canExecute)
+            var chromiumChildProcessId = GetChromiumChildProcessId(frameId);
+
+            if (chromiumChildProcessId > canExecuteJavascriptInMainFrameChildProcessId && !canExecute)
             {
                 return;
             }
 
-            canExecuteJavascriptInMainFrameId = frameId;
+            canExecuteJavascriptInMainFrameChildProcessId = chromiumChildProcessId;
             CanExecuteJavascriptInMainFrame = canExecute;
         }
 
@@ -427,7 +431,7 @@ namespace CefSharp.WinForms
 
         private void InitialLoad(bool? isLoading, CefErrorCode? errorCode)
         {
-            if(IsDisposed)
+            if (IsDisposed)
             {
                 initialLoadAction = null;
 
@@ -503,6 +507,22 @@ namespace CefSharp.WinForms
             this.FreeDevToolsContext();
         }
 
+        private static void InitializeCefInternal()
+        {
+            if (Cef.IsInitialized == null)
+            {
+                if (!Cef.Initialize(new CefSettings()))
+                {
+                    throw new InvalidOperationException(CefInitializeFailedErrorMessage);
+                }
+            }
+
+            if (Cef.IsInitialized == false)
+            {
+                throw new InvalidOperationException(CefIsInitializedFalseErrorMessage);
+            }
+        }
+
         /// <summary>
         /// Check is browser is initialized
         /// </summary>
@@ -536,6 +556,23 @@ namespace CefSharp.WinForms
             {
                 throw new ObjectDisposedException("ChromiumWebBrowser");
             }
+        }
+
+        private int GetChromiumChildProcessId(string frameIdentifier)
+        {
+            try
+            {
+                var parts = frameIdentifier.Split('-');
+
+                if (int.TryParse(parts[0], out var childProcessId))
+                    return childProcessId;
+            }
+            catch
+            {
+
+            }
+
+            return -1;
         }
     }
 }
